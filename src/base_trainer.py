@@ -56,7 +56,7 @@ class BaseTrainer:
         )
         self._pbar = tqdm(total=len(self._train_loader), desc="Training")
         signal.signal(signal.SIGINT, self._terminator)
-        signal.siginterrupt(signal.SIGINT, False)
+        #signal.siginterrupt(signal.SIGINT, False)
 
     def _train_val_iteration(
         self,

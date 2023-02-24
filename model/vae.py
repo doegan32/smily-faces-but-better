@@ -12,44 +12,140 @@ VAE model.
 
 import math
 from functools import reduce
-from typing import Tuple, Union
+from typing import Tuple, Union, List
 
 import torch
+
+
+class MLP(torch.nn.Module):
+    def __init__(
+            self,
+            input_dim: int,
+            output_dim: int,
+            layers: List[int],
+            batchnorm: bool=True
+    ) -> None:
+        super(MLP, self).__init__()
+        _layers = [torch.nn.Linear(input_dim, layers[0]), torch.nn.ReLU()]
+        if batchnorm:
+            _layers.append(torch.nn.BatchNorm1d(layers[0]))
+        for i in range(1, len(layers)):
+            _layers += [torch.nn.Linear(layers[i-1],layers[i]), torch.nn.ReLU()]
+            if batchnorm:
+                _layers.append(torch.nn.BatchNorm1d(layers[i]))
+        _layers.append(torch.nn.Linear(layers[-1], output_dim))
+        self._layers = torch.nn.Sequential(*_layers)
+
+    def foward(self, x: torch.tensor):
+        return self._layers(x)
+
+class CNN(torch.nn.Module):
+    def __init__(
+            self,
+            input_shape: Tuple[int],
+            output_dim: int,
+            pooling: bool=False
+    ) -> None:
+        super(CNN, self).__init__()
+        self._layers = torch.nn.Sequential(
+            torch.nn.Conv2d(input_shape[0], 32, 7),
+            torch.nn.BatchNorm2d(32),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(32, 64, 3),
+            torch.nn.BatchNorm2d(64),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(64, 128, 3),
+            torch.nn.BatchNorm2d(128),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(128, 256, 18),
+            torch.nn.Flatten(),
+            torch.nn.BatchNorm1d(256),  # More efficient
+            torch.nn.ReLU(),
+            torch.nn.Linear(256, output_dim)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._layers(x)
+    
+
+class CNNDecoder(torch.nn.Module):
+    def __init__(
+            self,
+            input_shape: Tuple[int],
+            output_shape: Tuple[int]            
+    ) -> None:
+        super(CNNDecoder, self).__init__()
+        self._layers = torch.nn.Sequential(
+            # *make_seq((latent_dim//4, 2, 2), image_shape, 5)
+            torch.nn.ConvTranspose2d(input_shape[0], 64, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(64, 64, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(64, 64, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(64, 32, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(32, 32, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(32, 16, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(16, 16, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(16, 8, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(8, 8, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(8, 4, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(4, 2, 3),
+            torch.nn.ReLU(),
+            torch.nn.ConvTranspose2d(2, output_shape[0], 6),
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._layers(x)
+
+        
+def reparameterization_trick(
+        z_param: torch.Tensor,
+        latent_dim: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    mu, logvar = z_param[:, : latent_dim], z_param[:, latent_dim :]
+    return mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar), mu, logvar
+
+
 
 
 class VAE(torch.nn.Module):
     def __init__(
         self,
-        input_dim: int,
+        image_shape: Tuple[int, int, int],
         latent_dim: int,
+        convolutional_encoder: bool=False
     ) -> None:
-        super().__init__()
-        self._img_dim = int(math.sqrt(input_dim))
-        self._encoder = torch.nn.Sequential(
-            torch.nn.Linear(input_dim, 512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, 256),
-            torch.nn.ReLU(),
-            torch.nn.Linear(256, 2 * latent_dim),  # mu, logvar
-        )
+        super(VAE, self).__init__()
+        self._image_shape = image_shape
+        image_dim = reduce(lambda a, b : a*b, image_shape)
         self._latent_dim = latent_dim
-        self._decoder = torch.nn.Sequential(
-            torch.nn.Linear(latent_dim, 256),
-            torch.nn.ReLU(),
-            torch.nn.Linear(256, 512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, input_dim),
+        self._encoder = (
+            MLP(image_dim, latent_dim*2, [512, 256], batchnorm=True)
+            if not convolutional_encoder
+            else CNN(image_shape, 2*latent_dim)
         )
+        self._decoder = MLP(latent_dim, image_dim, [256, 512], batchnorm=True)
+        self._use_conv = convolutional_encoder
 
     def forward(self, x):
         # batch_size = x.shape[0]
-        img_shape = x.shape
-        z_param = self._encoder(x.reshape(-1, img_shape[1] ** 2))
-        mu, logvar = z_param[:, : self._latent_dim], z_param[:, self._latent_dim :]
+        input_dim =  reduce(lambda a, b : a*b, x.shape)
+        z_param = self._encoder(x if self._use_conv else x.reshape(-1, input_dim))
+        #mu, logvar = z_param[:, : self._latent_dim], z_param[:, self._latent_dim :]
+        # latent_distribution = torch.distributions.Normal(mu, torch.exp(logstd))
+        # z = latent_distribution.rsample()
         # 0.5 * log(var) = sqrt(var)
-        z = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar)
+        z, mu, logvar = reparameterization_trick(z_param, self._latent_dim)
         # dist = torch.distributions.Normal(mu, torch.exp(0.5 * logvar))
-        return self._decoder(z).view(img_shape), mu, logvar
+        return self._decoder(z).view(input_dim), mu, logvar
 
     def sample(self, num_samples: int) -> torch.Tensor:
         z = torch.randn(
@@ -65,7 +161,7 @@ class CVAE(torch.nn.Module):
         condition_shape: Union[Tuple[int], int],
         latent_dim: int,
     ) -> None:
-        super().__init__()
+        super(CVAE, self).__init__()
         self._img_shape = image_shape
         image_dim = reduce(lambda a, b: a * b, image_shape)
         self._condition_dim = (
@@ -73,34 +169,9 @@ class CVAE(torch.nn.Module):
             if isinstance(condition_shape, tuple)
             else condition_shape
         )
-        self._encoder = torch.nn.Sequential(
-            torch.nn.Linear(image_dim + self._condition_dim, 512),
-            torch.nn.BatchNorm1d(512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, 512),
-            torch.nn.BatchNorm1d(512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, 256),
-            torch.nn.BatchNorm1d(256),
-            torch.nn.ReLU(),
-            torch.nn.Linear(256, 2 * latent_dim),  # mu, logvar
-        )
+        self._encoder = MLP(image_dim + self._condition_dim, 2*latent_dim, [512,512,256])
         self._latent_dim = latent_dim
-        self._decoder = torch.nn.Sequential(
-            torch.nn.Linear(latent_dim + self._condition_dim, 256),
-            torch.nn.BatchNorm1d(256),
-            torch.nn.ReLU(),
-            torch.nn.Linear(256, 256),
-            torch.nn.BatchNorm1d(256),
-            torch.nn.ReLU(),
-            torch.nn.Linear(256, 512),
-            torch.nn.BatchNorm1d(512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, 512),
-            torch.nn.BatchNorm1d(512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, image_dim),
-        )
+        self._decoder = MLP(latent_dim + self._condition_dim, image_dim, [256, 512, 512])
 
     def forward(self, x: torch.Tensor, c: torch.Tensor):
         img_shape = reduce(lambda a, b: a * b, x.shape[1:])
@@ -108,9 +179,7 @@ class CVAE(torch.nn.Module):
         z_param = self._encoder(
             torch.concat([x.reshape(-1, img_shape), condition], dim=-1)
         )
-        mu, logvar = z_param[:, : self._latent_dim], z_param[:, self._latent_dim :]
-        # 0.5 * log(var) = sqrt(var)
-        z = mu + torch.exp(0.5 * logvar) * torch.randn_like(logvar)
+        z, mu, logvar = reparameterization_trick(z_param, self._latent_dim)
         # dist = torch.distributions.Normal(mu, torch.exp(0.5 * logvar))
         return (
             self._decoder(torch.concat([z, condition], dim=-1)).view(x.shape),
@@ -161,7 +230,7 @@ class ConvCVAE(torch.nn.Module):
         condition_shape: Union[Tuple[int], int],
         latent_dim: int,
     ) -> None:
-        super().__init__()
+        super(ConvCVAE, self).__init__()
         self._img_shape = image_shape
         self._condition_dim = (
             reduce(lambda a, b: a * b, condition_shape)

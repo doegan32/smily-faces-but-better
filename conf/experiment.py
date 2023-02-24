@@ -21,10 +21,12 @@ from unique_names_generator import get_random_name
 from unique_names_generator.data import ADJECTIVES, NAMES
 
 from dataset.mnist import MNISTDataset
+from dataset.celeba import CelebADataset
 from model.vae import CVAE, VAE, ConvCVAE
 from src.base_trainer import BaseTrainer
 from src.cvae_trainer import CVAE_trainer
 from train import launch_experiment
+import hydra_zen
 
 # Set hydra.job.chdir=True using store():
 hydra_store = ZenStore(overwrite_ok=True)
@@ -62,6 +64,17 @@ dataset_store(
     ),
     name="mnist",
 )
+dataset_store(
+    pbuilds(
+        CelebADataset,
+        builds_bases=(ImageDatasetConf,),
+        dataset_root="data/celeba",
+        img_dim=CelebADataset.IMG_SIZE[0],
+    ),
+    name="celeba",
+)
+
+
 
 " ================== Dataloader & sampler ================== "
 
@@ -90,17 +103,18 @@ model_store(
     pbuilds(
         VAE,
         latent_dim=128,
-        input_dim=784,
+        image_shape=hydra_zen.MISSING,
+        convolutional_encoder=True
     ),
     name="vae",
 )
 
 model_store(
-    pbuilds(CVAE, latent_dim=128, condition_shape=1, image_shape=(1, 28, 28)),
+    pbuilds(CVAE, latent_dim=128, condition_shape=1, image_shape=hydra_zen.MISSING),
     name="cvae",
 )
 model_store(
-    pbuilds(ConvCVAE, latent_dim=128, condition_shape=1, image_shape=(1, 28, 28)),
+    pbuilds(ConvCVAE, latent_dim=128, condition_shape=1, image_shape=hydra_zen.MISSING),
     name="conv_cvae",
 )
 
@@ -234,6 +248,20 @@ experiment_store(
     ),
     name="cvae_mnist",
 )
+experiment_store(
+    make_config(
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "celeba"},
+            {"override /model": "vae"},
+        ],
+        model=dict(image_shape=(3,64,64)),
+        bases=(Experiment,),
+    ),
+    name="vae_celeba",
+)
+
+
 " ================== Model testing ================== "
 
 
