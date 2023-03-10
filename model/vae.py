@@ -11,7 +11,7 @@ VAE model.
 
 
 import math
-from functools import reduce
+from functools import partial, reduce
 from typing import Tuple, Union, List
 
 import torch
@@ -47,7 +47,7 @@ class CNN(torch.nn.Module):
             pooling: bool=False
     ) -> None:
         super(CNN, self).__init__()
-        self._layers = torch.nn.Sequential(
+        self._cnn = torch.nn.Sequential(
             torch.nn.Conv2d(input_shape[0], 32, 7),
             torch.nn.BatchNorm2d(32),
             torch.nn.ReLU(),
@@ -58,14 +58,22 @@ class CNN(torch.nn.Module):
             torch.nn.BatchNorm2d(128),
             torch.nn.ReLU(),
             torch.nn.Conv2d(128, 256, 18),
+            torch.nn.BatchNorm2d(256),  # More efficient
             torch.nn.Flatten(),
-            torch.nn.BatchNorm1d(256),  # More efficient
             torch.nn.ReLU(),
-            torch.nn.Linear(256, output_dim)
         )
+        self._linear = partial(torch.nn.Linear, out_features=output_dim)
+        self.initialized = False
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self._layers(x)
+        if not self.initialized:
+            features = self._cnn(x)
+            self._linear = self._linear(
+                in_featues = features.shape[-1],
+                device = self._cnn[0].weight.device
+            )
+            self.initialized = True
+        return self._linear(self._cnn(x))
     
 
 class CNNDecoder(torch.nn.Module):
